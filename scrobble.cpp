@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 #include <list>
+#include <cmath>
 #include <getopt.h>
 #include <stdio.h>
 #include <cstdlib>
@@ -45,26 +46,33 @@ Scrobble::Scrobble() {
 
 void Scrobble::start() {
     cout << "Logging with " << song::user << endl;
-    LastFmScrobbler scrobbler(song::user, song::pass, false, false);
+    LastFmScrobbler scrobbler(song::user, song::pass, false, true);
     scrobbler.authenticate();
         
     SubmissionInfo info(song::artist, song::title);
     info.setAlbum(song::album);
     info.setTrackNr(song::track);
-    info.setTrackLength(song::duration / 2);
+    info.setTrackLength(song::duration);
 
+    //scrobbler.setCommitOnlyMode(true);
     scrobbler.startedPlaying(info);
     paused = false;
     
     int status = 1;
-    
+    /* Scrobble will check mocp status within an interval time
+     * between each check. This interval is proportional to the song
+     * duration, extracted with base-e logarithm. The minimum 
+     * allowed will be 1 second. */
+    int interval = ceil( log(song::duration) ) * 1000000;
+   
+    usleep(2000000);
     while (status != 0) {
         status = checkStatus();
         
         switch (status) {
             case EVENT_STOP: // Stop scrobble due fail or cancel
-                cout << "Something went wrong, exiting." << endl;
                 scrobbler.finishedPlaying();
+                usleep(5000000);
                 exit(1);
             case EVENT_RESUME:
                 break;
@@ -72,10 +80,11 @@ void Scrobble::start() {
                 scrobbler.pausePlaying(paused); // Update paused information.    
                 break;
             case EVENT_COMPLETE:
+                cout << "Something went wrong, exiting." << endl;
                 exit(0);
                 break;
         }   
-        usleep(5000000); 
+        usleep(interval); 
     }
 }
 
@@ -96,6 +105,7 @@ int Scrobble::checkStatus() {
     while (!feof(pipe))
         if (fgets(buffer, 128, pipe) != NULL) {
             char    *end = buffer + strlen(buffer) - 1;
+
             if (*end == '\n')
                 *end = 0;
             result.push_back( buffer );
@@ -134,8 +144,8 @@ int Scrobble::checkStatus() {
             paused = true;
             return EVENT_PAUSE;
         }
-        int halftime = song::duration / 2;
-        if (atoi(csec.c_str()) > halftime) {
+        int halftime = song::duration * 0.6;
+        if (atoi(csec.c_str()) >= halftime) {
             cout << "Marking song as listened." << endl;
             return EVENT_COMPLETE;
         }
