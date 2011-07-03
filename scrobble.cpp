@@ -39,13 +39,13 @@ Scrobble::Scrobble() {
 
 void Scrobble::start() {
     cout << "Logging with " << song::user << endl;
-    LastFmScrobbler scrobbler(song::user, song::pass, false, true);
+    LastFmScrobbler scrobbler(song::user, song::pass, false, false);
     scrobbler.authenticate();
         
     SubmissionInfo info(song::artist, song::title);
     info.setAlbum(song::album);
     info.setTrackNr(song::track);
-    info.setTrackLength(song::duration);
+    info.setTrackLength(song::duration / 2);
 
     scrobbler.startedPlaying(info);
     paused = false;
@@ -56,15 +56,17 @@ void Scrobble::start() {
         status = checkStatus();
         
         switch (status) {
-            case 0:
+            case 0: // Fail
                 cout << "Something went wrong, exiting." << endl;
                 exit(1);
-            case 1:
-                scrobbler.pausePlaying(paused); // Update paused information.
+            case 1: // Continue
                 break;
-            case 2:
+            case 2: // Finish
                 scrobbler.finishedPlaying();
                 exit(0);
+            case 3: // Pause/Unpause event
+                scrobbler.pausePlaying(paused); // Update paused information.    
+                break;
         }   
         usleep(5000000); 
     }
@@ -115,11 +117,13 @@ int Scrobble::checkStatus() {
             cout << "Player stopped." << endl;
             return 0;
         }
-        if (cstate == "PLAY") {
+        if (cstate == "PLAY" && paused == true) {
             paused = false;
+            return 3;        
         } else
-        if (cstate == "PAUSE") {
+        if (cstate == "PAUSE" && paused == false) {
             paused = true;
+            return 3;
         }
         int halftime = song::duration / 2;
         if (atoi(csec.c_str()) > halftime) {
