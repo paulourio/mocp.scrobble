@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <cstdlib>
 #include <unistd.h>
+#include <string.h>
 #include <lastfmscrobbler.h>
 
 using namespace std;
@@ -27,10 +28,15 @@ class Scrobble {
     Scrobble();
   private:
     void start();
-    std::string exec(std::string cmd);
+    std::string exec(std::string cmd, bool removeNewLine);
     int checkStatus();
     
     bool paused;
+
+    static const int EVENT_PAUSE = 0;
+    static const int EVENT_STOP = 1;
+    static const int EVENT_RESUME = 2;
+    static const int EVENT_COMPLETE = 3;
 };
 
 Scrobble::Scrobble() {
@@ -56,16 +62,17 @@ void Scrobble::start() {
         status = checkStatus();
         
         switch (status) {
-            case 0: // Fail
+            case EVENT_STOP: // Stop scrobble due fail or cancel
                 cout << "Something went wrong, exiting." << endl;
-                exit(1);
-            case 1: // Continue
-                break;
-            case 2: // Finish
                 scrobbler.finishedPlaying();
-                exit(0);
-            case 3: // Pause/Unpause event
+                exit(1);
+            case EVENT_RESUME:
+                break;
+            case EVENT_PAUSE:
                 scrobbler.pausePlaying(paused); // Update paused information.    
+                break;
+            case EVENT_COMPLETE:
+                exit(0);
                 break;
         }   
         usleep(5000000); 
@@ -73,8 +80,7 @@ void Scrobble::start() {
 }
 
 int Scrobble::checkStatus() {
-    std::string cmd = exec("/usr/bin/which mocp");
-    cmd.erase(cmd.length() - 1, 1);
+    std::string cmd = exec("/usr/bin/which mocp", true);
     cmd.append(" -Q %file\\\\n%state\\\\n%cs");
     cout << "Running " << cmd << endl;
     
@@ -82,26 +88,29 @@ int Scrobble::checkStatus() {
     FILE* pipe = popen((char *) cmd.c_str(), "r");
     if (!pipe) {
         cout << "No output pipe" << endl;
-        return 0;
+        return EVENT_STOP;
     }
     char buffer[128];
     list<string> result;
     
     while (!feof(pipe))
-    	if (fgets(buffer, 128, pipe) != NULL)
-    		result.push_back( buffer );
+        if (fgets(buffer, 128, pipe) != NULL) {
+            char    *end = buffer + strlen(buffer) - 1;
+            if (*end == '\n')
+                *end = 0;
+            result.push_back( buffer );
+        }
     int stat_info = pclose(pipe);
     int status_code = WEXITSTATUS(stat_info);
     
     if (status_code == 2) {
         cout << "MOCP not running." << endl;
-        return 0;
+        return EVENT_STOP;
     }
     
     #define POP(x)  x.front(); x.pop_front()
     if (result.size() == 3) {
         std::string cfile = POP(result); // Which file is playing
-        cfile.erase(cfile.length() - 1, 1);
         std::string cstate = POP(result); // Player state
         cstate.erase(cstate.length() - 1, 1);
         std::string csec = POP(result); // Current seconds
@@ -111,42 +120,49 @@ int Scrobble::checkStatus() {
             cout << cfile << endl;
             cout << song::file << endl;
             cout << "Not playing this song anymore." << endl;
-            return 0;
+            return EVENT_STOP;
         }
         if (cstate == "STOP") {
             cout << "Player stopped." << endl;
-            return 0;
+            return EVENT_STOP;
         }
         if (cstate == "PLAY" && paused == true) {
             paused = false;
-            return 3;        
+            return EVENT_PAUSE;
         } else
         if (cstate == "PAUSE" && paused == false) {
             paused = true;
-            return 3;
+            return EVENT_PAUSE;
         }
         int halftime = song::duration / 2;
         if (atoi(csec.c_str()) > halftime) {
             cout << "Marking song as listened." << endl;
-            return 2;
+            return EVENT_COMPLETE;
         }
     } else {
         cout << "Unexpected syntax!" << endl;
-        return 0;
+        return EVENT_STOP;
     }
     
-    return 1;
+    return EVENT_RESUME;
 }
 
-std::string Scrobble::exec(std::string cmd) {
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) return "ERROR";
-    char buffer[128];
+std::string Scrobble::exec(std::string cmd, bool removeNewline) {
+    FILE    *pipe = popen(cmd.c_str(), "r");
+
+    if (!pipe) 
+        return "ERROR";
+    char    buffer[128];
+
     std::stringstream result;
     while (!feof(pipe))
-    	if (fgets(buffer, 128, pipe) != NULL)
-    		result << buffer;
+        if (fgets(buffer, 128, pipe) != NULL) {
+            if (removeNewline != false && buffer[strlen(buffer)-1] == '\n')
+                buffer[strlen(buffer) - 1] = 0;
+            result << buffer;
+        }
     pclose(pipe);
+
     return result.str();
 }
 
@@ -162,7 +178,7 @@ void usage() {
     cout << "\t-d   --duration  Song duration in seconds." << endl;
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char** argv) {
     int c;
     int help = 0, count = 0;
 
@@ -179,7 +195,8 @@ int main(int argc, char* argv[]) {
             {"file",  required_argument, 0, 'f'},
             {0, 0, 0, 0}
         };
-    while ((c = getopt_long(argc, argv, "h:u:p:a:b:t:n:d:f:", long_options, NULL)) != -1) {
+    char    *opts = "h:u:p:a:b:t:n:d:f:";
+    while ((c = getopt_long(argc, argv, opts, long_options, NULL)) != -1) {
         switch (c) {
             case 'h': cout << "help" << endl; break;            
             case 'u': song::user = optarg; count++; break;
